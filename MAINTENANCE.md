@@ -11,7 +11,7 @@
 | 本仓库 | https://github.com/thinkcodee/deepseek-harness-docker （fork） |
 | 同步状态 | 与上游一致（HEAD `9e87934`，ahead 0 / behind 0） |
 | 上游最后提交 | 2026-09-09 |
-| 已核对版本 | 0.2.2-rc.2（2026-11-13 核对） |
+| 已核对版本 | 0.2.2-rc.2（2026-11-13 CI 构建） |
 | npm 标签 | `next` = 0.2.2-rc.2，`latest` = 0.2.2-rc.1 |
 | 官方最新 tag | `dsh-v0.2.2-rc.2`（deepseek-harness 仓库，2026-11-11 更新） |
 
