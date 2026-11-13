@@ -11,8 +11,8 @@
 | 本仓库 | https://github.com/thinkcodee/deepseek-harness-docker （fork） |
 | 同步状态 | 与上游一致：**behind 0**（上游 HEAD `9e87934`）；ahead 均为本仓库自有提交（Docker Hub 流水线改造、CI 版本回填），不参与上游比对 |
 | 上游最后提交 | 2026-09-09 |
-| 已核对版本 | 0.2.2-rc.2（2026-11-13 CI 构建） |
-| npm 标签 | `next` = 0.2.2-rc.2，`latest` = 0.2.2-rc.1 |
+| 已核对版本 | 0.2.2-rc.3（2026-11-13 CI 构建） |
+| npm 标签 | `next` = 0.2.2-rc.3，`latest` = 0.2.2-rc.1 |
 | 官方最新 tag | `dsh-v0.2.2-rc.2`（deepseek-harness 仓库，2026-11-11 更新） |
 
 ## 为什么会「打包版本落后」
