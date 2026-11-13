@@ -9,7 +9,7 @@
 | --- | --- |
 | 上游仓库 | https://github.com/smanx/deepseek-harness-docker （`main`） |
 | 本仓库 | https://github.com/thinkcodee/deepseek-harness-docker （fork） |
-| 同步状态 | 与上游一致（HEAD `9e87934`，ahead 0 / behind 0） |
+| 同步状态 | 与上游一致：**behind 0**（上游 HEAD `9e87934`）；ahead 均为本仓库自有提交（Docker Hub 流水线改造、CI 版本回填），不参与上游比对 |
 | 上游最后提交 | 2026-09-09 |
 | 已核对版本 | 0.2.2-rc.2（2026-11-13 CI 构建） |
 | npm 标签 | `next` = 0.2.2-rc.2，`latest` = 0.2.2-rc.1 |
