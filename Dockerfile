@@ -14,13 +14,17 @@
 # admin 变体预装最新 DSH（@next）到 /opt/dsh（即管理服务的安装目录，挂载空卷时自动填充、开箱即用）
 FROM node:24-slim AS dsh-builder
 ARG DEV_TOOLS=none
+# DSH 版本：默认 next（跟随官方预发布通道，每次构建都取当时最新，等同原行为）；
+# 需要可复现/锁定版本时传 --build-arg DSH_VERSION=0.2.2-rc.2（官方 tag 形如 dsh-v0.2.2-rc.2）。
+# 当前官方最新（2026-11-13 核对）：next=0.2.2-rc.2，latest=0.2.2-rc.1。
+ARG DSH_VERSION=next
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 make g++ \
     && rm -rf /var/lib/apt/lists/* \
     && if [ "$DEV_TOOLS" = "admin" ]; then \
-         npm install -g --prefix /opt/dsh --no-audit --no-fund @deepseek-ai/dsh@next; \
+         npm install -g --prefix /opt/dsh --no-audit --no-fund @deepseek-ai/dsh@${DSH_VERSION}; \
        else \
-         npm install -g --no-audit --no-fund @deepseek-ai/dsh@next; \
+         npm install -g --no-audit --no-fund @deepseek-ai/dsh@${DSH_VERSION}; \
        fi \
     && mkdir -p /opt/dsh
 
