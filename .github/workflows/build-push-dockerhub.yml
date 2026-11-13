@@ -1,6 +1,9 @@
 name: Build & Push (Docker Hub)
 
-# 目标：把 DSH 的 Dockerfile 打成镜像并发布到 Docker Hub。
+# 目标：把 DSH 的 Dockerfile 打成多架构镜像，**同时**发布到 Docker Hub 与 GHCR（tag 完全一致）。
+# GHCR 是备用源：Docker Hub 在国内/NAS 拉不动时切 ghcr.io/<owner>/deepseek-harness:<tag>。
+# 注意：GHCR 包首次推送后默认 private，需在 GitHub → Packages 里把可见性改成 Public 才能免登录拉取。
+# 构建成功后还会打 git tag（dsh-v<版本>）并发布 GitHub Release，附源码 tar.gz/zip 与 SHA256。
 # 关键点：先把 DSH_VERSION 解析成具体版本号（auto 取 npm next）再构建，
 # 让每个镜像的 DSH 版本可复现、可追溯，而不是「构建那一刻的 next」。
 on:
@@ -11,14 +14,15 @@ on:
         required: false
         default: 'auto'
       platforms:
-        description: '目标架构'
+        description: '目标架构（多架构用逗号分隔；arm/v7 为尽力支持，Node 官方镜像与 uv 对 32 位 ARM 支持不稳）'
         required: false
         type: choice
-        default: 'linux/amd64'
+        default: 'linux/amd64,linux/arm64'
         options:
+          - 'linux/amd64,linux/arm64'
           - 'linux/amd64'
           - 'linux/arm64'
-          - 'linux/amd64,linux/arm64'
+          - 'linux/amd64,linux/arm64,linux/arm/v7'
       update_maintenance:
         description: '构建成功后回填 MAINTENANCE.md 版本记录'
         required: false
@@ -38,7 +42,8 @@ on:
     - cron: '0 1 * * *'
 
 permissions:
-  contents: write
+  contents: write   # 建 tag / Release
+  packages: write   # 推 ghcr.io
 
 concurrency:
   group: build-push-dockerhub-${{ github.ref }}
@@ -47,6 +52,8 @@ concurrency:
 env:
   # Docker Hub 镜像名，形如 <namespace>/<repo>；未配置变量时用仓库 owner + deepseek-harness
   IMAGE: ${{ vars.DOCKERHUB_IMAGE || format('{0}/deepseek-harness', github.repository_owner) }}
+  # GHCR 镜像名，与 Docker Hub 对齐（同 owner、同仓库名）；GHCR 要求全小写
+  GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/deepseek-harness
 
 jobs:
   resolve:
@@ -77,7 +84,7 @@ jobs:
         id: ver
         env:
           RAW: ${{ github.event.inputs.dsh_version || 'auto' }}
-          PLATFORMS: ${{ github.event.inputs.platforms || 'linux/amd64' }}
+          PLATFORMS: ${{ github.event.inputs.platforms || 'linux/amd64,linux/arm64' }}
         run: |
           set -euo pipefail
           raw="$(echo "$RAW" | tr -d '[:space:]')"
@@ -134,6 +141,13 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: 登录 GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: 计算镜像标签
         id: tags
         env:
@@ -142,14 +156,22 @@ jobs:
         run: |
           set -euo pipefail
           short="$(echo "${GITHUB_SHA}" | cut -c1-7)"
+          # GHCR 的包路径必须全小写
+          ghcr="$(printf '%s' "${{ env.GHCR_IMAGE }}" | tr '[:upper:]' '[:lower:]')"
           if [ "$VARIANT" = "none" ]; then
             tags="${{ env.IMAGE }}:$V
           ${{ env.IMAGE }}:latest
-          ${{ env.IMAGE }}:sha-$short"
+          ${{ env.IMAGE }}:sha-$short
+          $ghcr:$V
+          $ghcr:latest
+          $ghcr:sha-$short"
           else
             tags="${{ env.IMAGE }}:${VARIANT}-$V
           ${{ env.IMAGE }}:${VARIANT}-latest
-          ${{ env.IMAGE }}:${VARIANT}-sha-$short"
+          ${{ env.IMAGE }}:${VARIANT}-sha-$short
+          $ghcr:${VARIANT}-$V
+          $ghcr:${VARIANT}-latest
+          $ghcr:${VARIANT}-sha-$short"
           fi
           {
             echo 'tags<<EOF'
@@ -191,21 +213,39 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: 回拉并比对 /tmp/app_version.env
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 回拉并比对版本与架构（Docker Hub + GHCR）
         env:
           V: ${{ needs.resolve.outputs.version }}
+          EXPECTED: ${{ needs.resolve.outputs.platforms }}
         run: |
           set -euo pipefail
-          img="${{ env.IMAGE }}:$V"
-          echo "校验 $img"
-          docker pull "$img"
-          actual="$(docker run --rm --entrypoint cat "$img" /tmp/app_version.env | sed -n 's/^APP_VERSION=//p')"
-          echo "期望 $V / 实际 $actual"
-          if [ "$actual" != "$V" ]; then
-            echo "::error::镜像内版本 $actual 与目标 $V 不一致"
-            exit 1
-          fi
-          echo "✅ 版本一致"
+          ghcr="$(printf '%s' "${{ env.GHCR_IMAGE }}" | tr '[:upper:]' '[:lower:]')"
+          for img in "${{ env.IMAGE }}:$V" "$ghcr:$V"; do
+            echo "===== $img ====="
+            docker pull "$img"
+            actual="$(docker run --rm --entrypoint cat "$img" /tmp/app_version.env | sed -n 's/^APP_VERSION=//p')"
+            echo "版本 期望 $V / 实际 $actual"
+            if [ "$actual" != "$V" ]; then
+              echo "::error::镜像内版本 $actual 与目标 $V 不一致（$img）"
+              exit 1
+            fi
+            got="$(docker buildx imagetools inspect "$img" | sed -n 's/^  Platform: *//p' | sort -u | tr '\n' ' ')"
+            echo "架构 期望 [$EXPECTED] / 实际 [$got]"
+            for p in $(printf '%s' "$EXPECTED" | tr ',' ' '); do
+              case " $got " in
+                *" $p "*) ;;
+                *) echo "::error::$img 缺少架构 $p（实际：$got）"; exit 1 ;;
+              esac
+            done
+          done
+          echo "✅ 版本与架构校验通过（Docker Hub + GHCR）"
 
   record:
     name: 回填版本记录
@@ -242,3 +282,98 @@ jobs:
           git add MAINTENANCE.md
           git commit -m "chore: CI 已发布 $V，回填已核对版本 [skip ci]"
           git push
+
+  release:
+    name: 打 tag 并发布源码
+    needs: [resolve, verify, record]
+    # record 被跳过（push 触发）时仍要发布；verify 失败则不发布
+    if: always() && needs.verify.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: 检查 tag 是否已存在
+        id: chk
+        env:
+          V: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="dsh-v$V"
+          if git ls-remote --tags origin "refs/tags/$tag" | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "已存在 $tag，跳过创建"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "将创建 $tag"
+          fi
+
+      - name: 生成源码制品包
+        if: steps.chk.outputs.exists == 'false'
+        env:
+          V: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          prefix="deepseek-harness-docker-$V/"
+          git archive --format=tar.gz --prefix="$prefix" -o "dist/deepseek-harness-docker-$V.tar.gz" HEAD
+          git archive --format=zip    --prefix="$prefix" -o "dist/deepseek-harness-docker-$V.zip" HEAD
+          ( cd dist && sha256sum "deepseek-harness-docker-$V.tar.gz" "deepseek-harness-docker-$V.zip" > "deepseek-harness-docker-$V.sha256" )
+          ls -lh dist/
+
+      - name: 推送 tag
+        if: steps.chk.outputs.exists == 'false'
+        env:
+          V: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "dsh-v$V" -m "DSH $V Docker 镜像源码快照"
+          git push origin "dsh-v$V"
+
+      - name: 创建 GitHub Release
+        if: steps.chk.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dsh-v${{ needs.resolve.outputs.version }}
+          name: DSH ${{ needs.resolve.outputs.version }} Docker 镜像源码
+          body: |
+            ## DSH ${{ needs.resolve.outputs.version }} Docker 镜像
+
+            对应一次成功的镜像构建，同时推送到 Docker Hub 与 GitHub Container Registry。
+
+            **架构**：`${{ needs.resolve.outputs.platforms }}`（buildx 多架构 manifest，docker pull 时按宿主自动选择）
+
+            ### 镜像地址（tag 完全一致，二选一）
+
+            - Docker Hub：`${{ env.IMAGE }}`
+            - GHCR 备用（Docker Hub 拉不动时用）：`${{ env.GHCR_IMAGE }}`
+
+            | 用途 | 标签 |
+            |---|---|
+            | 推荐：含 git/curl/vim/pnpm/uv | `:devtools-${{ needs.resolve.outputs.version }}`、`:devtools-latest` |
+            | 精简工具链 | `:devtools-min-${{ needs.resolve.outputs.version }}`、`:devtools-min-latest` |
+            | 管理台变体 | `:admin-${{ needs.resolve.outputs.version }}`、`:admin-latest` |
+            | 最小体积（无额外工具） | `:${{ needs.resolve.outputs.version }}`、`:latest` |
+
+            ```bash
+            docker pull ${{ env.IMAGE }}:devtools-latest
+            # 或
+            docker pull ${{ env.GHCR_IMAGE }}:devtools-latest
+            ```
+
+            ### 源码制品
+            - `deepseek-harness-docker-${{ needs.resolve.outputs.version }}.tar.gz` / `.zip`：提交 `${{ github.sha }}` 的完整源码快照
+            - `deepseek-harness-docker-${{ needs.resolve.outputs.version }}.sha256`：上面两个包的校验和
+            - GitHub 自动附带的 Source code (zip / tar.gz)
+
+            ### 版本对应
+            DSH `${{ needs.resolve.outputs.version }}`（npm `next`/指定版本），镜像内 `/tmp/app_version.env` 的 `APP_VERSION` 已由 CI 回拉校验。
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          fail_on_unmatched_files: true
