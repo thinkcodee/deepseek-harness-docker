@@ -193,6 +193,14 @@ docker run -d \
 DSH 的会话/配置数据保存在命名卷 `dsh-data`（容器内 `/root/.dsh`）。
 `docker stop/start` 与删除容器后卷仍在，数据不丢；彻底清除需先停容器再 `docker volume rm dsh-data`。
 
+## 架构支持
+
+镜像默认发布两个架构：`linux/amd64`（x86_64）与 `linux/arm64`（ARM 64 位，即 ARMv8）。
+
+- **不提供 32 位 ARM（`linux/arm/v7` / ARMv7）**：DSH 要求 Node ≥ 24.9.0，而官方 `node` 镜像（24/26/27）只发布 amd64、arm64v8、ppc64le、s390x，**没有 armv7 变体**，基础镜像在解析阶段就会报 `no match for platform in manifest`，因此无法构建。32 位设备（如 32 位树莓派系统）请先升级到 64 位系统，或换用 arm64 机器。
+- **实验架构 `ppc64le`**：手动触发工作流时可选 `linux/amd64,linux/arm64,linux/ppc64le`（未纳入默认发布，部分原生依赖可能编译失败）。
+- 手动触发时若填入 `linux/arm/v7`，工作流会在「解析版本与变体」阶段直接拦下并提示上述原因，不会白跑一次构建。
+
 ## 说明
 
 - DSH 官方禁止 `--host 0.0.0.0`，因此容器内 DSH 保持默认回环监听，代理负责对外；

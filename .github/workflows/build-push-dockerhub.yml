@@ -14,17 +14,15 @@ on:
         required: false
         default: 'auto'
       platforms:
-        description: '目标架构（逗号分隔，默认 x86_64 + ARM 64/32 位三架构）'
+        description: '目标架构（逗号分隔，默认 x86_64 + ARM64；32 位 arm/v7 无官方 Node 24 镜像，不支持）'
         required: false
         type: choice
-        default: 'linux/amd64,linux/arm64,linux/arm/v7'
+        default: 'linux/amd64,linux/arm64'
         options:
-          - 'linux/amd64,linux/arm64,linux/arm/v7'
           - 'linux/amd64,linux/arm64'
           - 'linux/amd64'
           - 'linux/arm64'
-          - 'linux/arm/v7'
-          - 'linux/amd64,linux/arm64,linux/arm/v7,linux/ppc64le,linux/s390x'
+          - 'linux/amd64,linux/arm64,linux/ppc64le'
       update_maintenance:
         description: '构建成功后回填 MAINTENANCE.md 版本记录'
         required: false
@@ -86,9 +84,16 @@ jobs:
         id: ver
         env:
           RAW: ${{ github.event.inputs.dsh_version || 'auto' }}
-          PLATFORMS: ${{ github.event.inputs.platforms || 'linux/amd64,linux/arm64,linux/arm/v7' }}
+          PLATFORMS: ${{ github.event.inputs.platforms || 'linux/amd64,linux/arm64' }}
         run: |
           set -euo pipefail
+          # 32 位 ARM 硬阻断：dsh 要求 Node >= 24.9.0，而 Node 24/26/27 官方镜像只发布
+          # amd64/arm64v8/ppc64le/s390x，没有 linux/arm/v7（Node 18 时代才有的架构）。
+          # 提前给出可读原因，避免 buildx 在解析基础镜像时报 "no match for platform"。
+          if [[ ",$PLATFORMS," == *"arm/v7"* || ",$PLATFORMS," == *"armv7"* ]]; then
+            echo "::error::linux/arm/v7 无法构建：dsh 需要 Node >= 24.9.0，而官方 node 镜像（24/26/27）只提供 amd64、arm64v8、ppc64le、s390x，不含 32 位 ARM。请改用 arm64 设备或改选其它架构。"
+            exit 1
+          fi
           raw="$(echo "$RAW" | tr -d '[:space:]')"
           if [[ "$raw" =~ ^[0-9] ]]; then
             ver="$raw"; echo "按具体版本处理：$ver"
