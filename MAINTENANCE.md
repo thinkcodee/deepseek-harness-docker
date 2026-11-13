@@ -63,3 +63,41 @@ git push origin main                      # 推到自己的 fork
 上游仓库是自动化同步的（提交信息形如 `Sync deepseek-harness (<sha>)`），
 它跟随官方 `deepseek-harness` 仓库演进，所以「上游有新提交」通常意味着 DSH 有兼容性变化，
 合并后应重点回归 `proxy/upstream-token.js`（launch token 换取会话 cookie 的链路）与 `manager/`。
+
+## CI：GitHub Actions 自动构建并推送 Harbor
+
+工作流：`.github/workflows/build-push-harbor.yml`
+
+触发方式：
+- **定时**：每天 01:00 UTC（= 09:00 Asia/Shanghai），自动跟随官方 `next` 重打全部变体；
+- **手动**：Actions → Build & Push (Harbor) → Run workflow，可指定具体版本号（如 `0.2.2-rc.2`）与架构；
+- **改动触发**：`Dockerfile` / `.build-variants` / `entrypoint.sh` / `proxy/**` / `manager/**` 变更后推送 main。
+
+做法：先把 `DSH_VERSION` 解析成**具体版本号**（`auto` 取 npm `next`），并校验该版本在 npm 上真实存在，
+再以 `--build-arg DSH_VERSION=<版本>` 构建，所以每个镜像的 DSH 版本可复现、可追溯，不再是「构建那一刻的 next」。
+
+一次运行产出 5 个镜像变体（基础 + `.build-variants` 里每个前缀）：`none`、`test`、`admin`、`devtools`、`devtools-min`。
+tag 规则（`<img>` = `<HARBOR_REGISTRY>/<HARBOR_PROJECT>/<HARBOR_IMAGE>`）：
+
+| 变体 | tags |
+| --- | --- |
+| 基础（`none`） | `<img>:<版本>`、`<img>:latest`、`<img>:sha-<短sha>` |
+| 其余 | `<img>:<变体>-<版本>`、`<img>:<变体>-latest`、`<img>:<变体>-sha-<短sha>` |
+
+构建后会回拉基础镜像，用 `cat /tmp/app_version.env` 校验镜像内版本与目标版本一致，不一致则失败。
+定时/手动运行成功后会自动回填本文件「已核对版本」「npm 标签」两行并提交（`[skip ci]`）。
+
+### 首次启用需在仓库设置里配置
+
+`Settings → Secrets and variables → Actions`：
+
+| 类型 | 名称 | 说明 |
+| --- | --- | --- |
+| Variable | `HARBOR_REGISTRY` | **必填**，如 `harbor.example.com`（不带 `https://`） |
+| Variable | `HARBOR_PROJECT` | 选填，默认 `dsh` |
+| Variable | `HARBOR_IMAGE` | 选填，默认 `deepseek-harness` |
+| Secret | `HARBOR_USERNAME` | **必填**，Harbor 账号或机器人账号 |
+| Secret | `HARBOR_PASSWORD` | **必填**，对应的密码/Token |
+
+Harbor 侧需提前创建项目（默认 `dsh`），并给该账号推送权限。
+若 Harbor 使用自签证书，需在 runner 上信任该 CA（本工作流默认按公开可信证书处理）。
