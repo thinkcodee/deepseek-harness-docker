@@ -1,0 +1,244 @@
+name: Build & Push (Docker Hub)
+
+# 目标：把 DSH 的 Dockerfile 打成镜像并发布到 Docker Hub。
+# 关键点：先把 DSH_VERSION 解析成具体版本号（auto 取 npm next）再构建，
+# 让每个镜像的 DSH 版本可复现、可追溯，而不是「构建那一刻的 next」。
+on:
+  workflow_dispatch:
+    inputs:
+      dsh_version:
+        description: '要打包的 DSH 版本：具体版本号（如 0.2.2-rc.2）或 npm 标签（next/latest），auto = next'
+        required: false
+        default: 'auto'
+      platforms:
+        description: '目标架构'
+        required: false
+        type: choice
+        default: 'linux/amd64'
+        options:
+          - 'linux/amd64'
+          - 'linux/arm64'
+          - 'linux/amd64,linux/arm64'
+      update_maintenance:
+        description: '构建成功后回填 MAINTENANCE.md 版本记录'
+        required: false
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - '.build-variants'
+      - 'entrypoint.sh'
+      - 'proxy/**'
+      - 'manager/**'
+      - '.github/workflows/build-push-dockerhub.yml'
+  schedule:
+    # 每天 01:00 UTC = 09:00 Asia/Shanghai，自动跟随官方版本重打
+    - cron: '0 1 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-push-dockerhub-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Docker Hub 镜像名，形如 <namespace>/<repo>；未配置变量时用仓库 owner + deepseek-harness
+  IMAGE: ${{ vars.DOCKERHUB_IMAGE || format('{0}/deepseek-harness', github.repository_owner) }}
+
+jobs:
+  resolve:
+    name: 解析版本与变体
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      variants: ${{ steps.matrix.outputs.variants }}
+      platforms: ${{ steps.ver.outputs.platforms }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验 Docker Hub 配置
+        env:
+          U: ${{ secrets.DOCKERHUB_USERNAME }}
+          T: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          missing=""
+          [ -z "$U" ] && missing="$missing DOCKERHUB_USERNAME(secret)"
+          [ -z "$T" ] && missing="$missing DOCKERHUB_TOKEN(secret)"
+          if [ -n "$missing" ]; then
+            echo "::error::缺少配置:$missing。请在 Settings → Secrets and variables → Actions 添加（Token 到 Docker Hub → Account settings → Personal access tokens 生成，权限 Read & Write）"
+            exit 1
+          fi
+          echo "目标镜像：$IMAGE"
+
+      - name: 解析 DSH 版本（钉成具体版本号）
+        id: ver
+        env:
+          RAW: ${{ github.event.inputs.dsh_version || 'auto' }}
+          PLATFORMS: ${{ github.event.inputs.platforms || 'linux/amd64' }}
+        run: |
+          set -euo pipefail
+          raw="$(echo "$RAW" | tr -d '[:space:]')"
+          if [[ "$raw" =~ ^[0-9] ]]; then
+            ver="$raw"; echo "按具体版本处理：$ver"
+          else
+            tag="$raw"; [ "$tag" = "auto" ] && tag="next"
+            ver="$(curl -fsSL "https://registry.npmjs.org/@deepseek-ai/dsh/$tag" \
+                   | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.version){console.error("npm 标签 %s 没有 version 字段",process.argv[1]);process.exit(1)}process.stdout.write(j.version)})' "$tag")" \
+              || { echo "::error::无法从 npm 解析标签 $tag"; exit 1; }
+            echo "npm 标签 $tag → $ver"
+          fi
+          code="$(curl -s -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/@deepseek-ai/dsh/$ver")"
+          if [ "$code" != "200" ]; then
+            echo "::error::DSH 版本不存在：$ver（npm 返回 $code）"
+            exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "platforms=$PLATFORMS" >> "$GITHUB_OUTPUT"
+          echo "✅ 将构建 DSH $ver（$PLATFORMS）"
+
+      - name: 生成变体矩阵
+        id: matrix
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const lines = fs.readFileSync(".build-variants", "utf8")
+              .split("\n").map(l => l.trim())
+              .filter(l => l && !l.startsWith("#"));
+            const prefixes = lines.map(l => l.split("|")[0].trim()).filter(Boolean);
+            const variants = ["none", ...prefixes.filter(p => p !== "none")];
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `variants=${JSON.stringify(variants)}\n`);
+            console.log("构建变体：", variants.join(", "));
+          '
+
+  build:
+    name: 构建 ${{ matrix.variant }}
+    needs: resolve
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(needs.resolve.outputs.variants) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 计算镜像标签
+        id: tags
+        env:
+          V: ${{ needs.resolve.outputs.version }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          short="$(echo "${GITHUB_SHA}" | cut -c1-7)"
+          if [ "$VARIANT" = "none" ]; then
+            tags="${{ env.IMAGE }}:$V
+          ${{ env.IMAGE }}:latest
+          ${{ env.IMAGE }}:sha-$short"
+          else
+            tags="${{ env.IMAGE }}:${VARIANT}-$V
+          ${{ env.IMAGE }}:${VARIANT}-latest
+          ${{ env.IMAGE }}:${VARIANT}-sha-$short"
+          fi
+          {
+            echo 'tags<<EOF'
+            echo "$tags"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+          echo "$tags"
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ needs.resolve.outputs.platforms }}
+          push: true
+          build-args: |
+            DEV_TOOLS=${{ matrix.variant }}
+            DSH_VERSION=${{ needs.resolve.outputs.version }}
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.resolve.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
+          # Docker Hub 不保留 attestation manifest，关掉避免 pull 端不兼容
+          provenance: false
+          sbom: false
+
+  verify:
+    name: 校验镜像内版本
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 回拉并比对 /tmp/app_version.env
+        env:
+          V: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          img="${{ env.IMAGE }}:$V"
+          echo "校验 $img"
+          docker pull "$img"
+          actual="$(docker run --rm --entrypoint cat "$img" /tmp/app_version.env | sed -n 's/^APP_VERSION=//p')"
+          echo "期望 $V / 实际 $actual"
+          if [ "$actual" != "$V" ]; then
+            echo "::error::镜像内版本 $actual 与目标 $V 不一致"
+            exit 1
+          fi
+          echo "✅ 版本一致"
+
+  record:
+    name: 回填版本记录
+    needs: [resolve, verify]
+    runs-on: ubuntu-latest
+    # push 触发时不回填，避免自动提交造成循环
+    if: github.event_name != 'push' && inputs.update_maintenance != false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 更新 MAINTENANCE.md
+        env:
+          V: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          today="$(date -u -d '+8 hours' +%F)"
+          next="$(curl -fsSL https://registry.npmjs.org/@deepseek-ai/dsh/next | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).version))')" || next="未知"
+          latest="$(curl -fsSL https://registry.npmjs.org/@deepseek-ai/dsh/latest | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).version))')" || latest="未知"
+          sed -i -E "s#^\| 已核对版本 \|.*#| 已核对版本 | $V（$today CI 构建） |#" MAINTENANCE.md
+          sed -i -E "s#^\| npm 标签 \|.*#| npm 标签 | \`next\` = $next，\`latest\` = $latest |#" MAINTENANCE.md
+          git diff --stat
+
+      - name: 提交
+        env:
+          V: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "无变化，跳过提交"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add MAINTENANCE.md
+          git commit -m "chore: CI 已发布 $V，回填已核对版本 [skip ci]"
+          git push
