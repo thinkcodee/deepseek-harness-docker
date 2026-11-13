@@ -14,15 +14,17 @@ on:
         required: false
         default: 'auto'
       platforms:
-        description: '目标架构（多架构用逗号分隔；arm/v7 为尽力支持，Node 官方镜像与 uv 对 32 位 ARM 支持不稳）'
+        description: '目标架构（逗号分隔，默认 x86_64 + ARM 64/32 位三架构）'
         required: false
         type: choice
-        default: 'linux/amd64,linux/arm64'
+        default: 'linux/amd64,linux/arm64,linux/arm/v7'
         options:
+          - 'linux/amd64,linux/arm64,linux/arm/v7'
           - 'linux/amd64,linux/arm64'
           - 'linux/amd64'
           - 'linux/arm64'
-          - 'linux/amd64,linux/arm64,linux/arm/v7'
+          - 'linux/arm/v7'
+          - 'linux/amd64,linux/arm64,linux/arm/v7,linux/ppc64le,linux/s390x'
       update_maintenance:
         description: '构建成功后回填 MAINTENANCE.md 版本记录'
         required: false
@@ -84,7 +86,7 @@ jobs:
         id: ver
         env:
           RAW: ${{ github.event.inputs.dsh_version || 'auto' }}
-          PLATFORMS: ${{ github.event.inputs.platforms || 'linux/amd64,linux/arm64' }}
+          PLATFORMS: ${{ github.event.inputs.platforms || 'linux/amd64,linux/arm64,linux/arm/v7' }}
         run: |
           set -euo pipefail
           raw="$(echo "$RAW" | tr -d '[:space:]')"

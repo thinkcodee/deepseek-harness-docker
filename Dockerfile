@@ -86,7 +86,12 @@ RUN if [ -n "$DEV_TOOLS" ] && [ "$DEV_TOOLS" != "none" ]; then \
         npm install -g --no-audit --no-fund $NPM_PKGS; \
       fi; \
       if [ "$UV_FLAG" = "1" ]; then \
-        curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh; \
+        case "$(uname -m)" in \
+          x86_64|aarch64) \
+            curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh ;; \
+          *) \
+            echo "跳过 uv：astral 未提供 $(uname -m) 的预编译产物（armv7/ppc64le/s390x）" ;; \
+        esac; \
       fi; \
     fi
 
