@@ -110,7 +110,11 @@ jobs:
           # 脚本用 --github-output 顺带写出 version / channel / dist_tag 三个输出。
           scripts/resolve-dsh-version.sh "$RAW" --github-output
           echo "platforms=$PLATFORMS" >> "$GITHUB_OUTPUT"
-          echo "✅ 将构建 DSH ${{ steps.ver.outputs.version }}（$PLATFORMS，解析方式 ${{ steps.ver.outputs.channel }}）"
+          # 注意：同一步骤内不能用 ${{ steps.ver.outputs.* }}（本步骤的 outputs 此刻还没生效），
+          # 所以这里直接读回刚写入 GITHUB_OUTPUT 的值。
+          RESOLVED_VERSION="$(grep -E '^version=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2-)"
+          RESOLVED_CHANNEL="$(grep -E '^channel=' "$GITHUB_OUTPUT" | tail -n1 | cut -d= -f2-)"
+          echo "✅ 将构建 DSH $RESOLVED_VERSION（$PLATFORMS，解析方式 $RESOLVED_CHANNEL）"
 
       - name: 生成变体矩阵
         id: matrix
