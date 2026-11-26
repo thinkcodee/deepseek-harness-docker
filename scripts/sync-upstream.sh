@@ -65,8 +65,12 @@ NEXT_VER=$(curl -sS --max-time 20 https://registry.npmjs.org/@deepseek-ai/dsh/ne
   | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).version)}catch{console.log("")}})')
 LATEST_VER=$(curl -sS --max-time 20 https://registry.npmjs.org/@deepseek-ai/dsh/latest \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).version)}catch{console.log("")}})')
+# auto 通道：npm 上发布最新的版本（含 alpha/beta/rc）。CI 的 auto 就是这个口径，
+# 所以这里也用它比对，才能真正回答「CI 这次会不会重打新版本」。
+AUTO_VER=$("$REPO_DIR/scripts/resolve-dsh-version.sh" auto 2>/dev/null | tail -n1) || AUTO_VER=""
 echo "npm next   : ${NEXT_VER:-查询失败}"
 echo "npm latest : ${LATEST_VER:-查询失败}"
+echo "npm auto   : ${AUTO_VER:-查询失败}（发布最新的版本，CI auto 通道的口径）"
 
 RECORDED=""
 if [ -f "$VERSION_DOC" ]; then
@@ -76,13 +80,14 @@ echo "本仓库记录 : ${RECORDED:-未记录}"
 
 echo
 echo "=== [3/3] 结论 ==="
-if [ -n "$RECORDED" ] && [ -n "$NEXT_VER" ] && [ "$RECORDED" != "$NEXT_VER" ]; then
-  echo "★ 版本落后：仓库记录 $RECORDED，官方 next 已是 $NEXT_VER"
+if [ -n "$RECORDED" ] && [ -n "$AUTO_VER" ] && [ "$RECORDED" != "$AUTO_VER" ]; then
+  echo "★ 版本落后：仓库记录 $RECORDED，npm 上发布最新的版本已是 $AUTO_VER"
   echo "  处理：1) 更新 MAINTENANCE.md 的「已核对版本」；"
-  echo "        2) 重新构建镜像（见 MAINTENANCE.md 的构建命令，可传 --build-arg DSH_VERSION=$NEXT_VER 锁定）；"
+  echo "        2) 重新构建镜像（见 MAINTENANCE.md 的构建命令，可传 --build-arg DSH_VERSION=$AUTO_VER 锁定）；"
   echo "        3) 推送新 tag 到 Docker Hub / GHCR。"
+  echo "  注：next=$NEXT_VER latest=$LATEST_VER（dist-tag 可能落后于发布最新版本，别只看这两个）。"
 else
-  echo "版本无需处理（记录与官方 next 一致，或查询失败）。"
+  echo "版本无需处理（记录与 npm 发布最新版本一致，或查询失败）。"
 fi
 
 if [ -n "$(git status --porcelain)" ]; then

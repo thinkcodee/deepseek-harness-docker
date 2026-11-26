@@ -12,8 +12,12 @@
 | 同步状态 | 与上游一致：**behind 0**（上游 HEAD `9e87934`）；ahead 均为本仓库自有提交（Docker Hub 流水线改造、CI 版本回填），不参与上游比对 |
 | 上游最后提交 | 2026-09-09 |
 | 已核对版本 | 0.2.2-rc.5（2026-11-26 CI 构建） |
-| npm 标签 | `next` = 0.2.2-rc.5，`latest` = 0.2.2-rc.5 |
+| npm 标签 | `next` = 0.2.2-rc.5，`latest` = 0.2.2-rc.5，`auto`（发布最新） = 0.2.3-alpha.2 |
 | 官方最新 tag | `dsh-v0.2.2-rc.2`（deepseek-harness 仓库，2026-11-11 更新） |
+
+> **注意**：dist-tag 不等于「最新发布」。官方可能只给 `alpha` 通道打 tag，此时 `next`/`latest`
+> 会落后于已经发布的更高版本（例：`next`=`0.2.2-rc.5`，但已发布的 `0.2.3-alpha.2` 没有任何 tag 指向）。
+> CI 的 `auto` 通道按**发布时间**取最新，因此不会漏掉官方已发的新版本。
 
 ## 为什么会「打包版本落后」
 
@@ -29,22 +33,24 @@
 ## 升级到官方新版本
 
 ```bash
-# 1) 先查官方最新版本（也可跑 scripts/sync-upstream.sh 自动报告）
-curl -sS https://registry.npmjs.org/@deepseek-ai/dsh/next | grep -o '"version":"[^"]*"' | head -1
+# 1) 先查官方最新发布版本（也可跑 scripts/sync-upstream.sh 自动报告）
+scripts/resolve-dsh-version.sh auto
+# 或直接看各 dist-tag：
+curl -sS https://registry.npmjs.org/@deepseek-ai/dsh | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s)["dist-tags"]))'
 
-# 2) 重建镜像并锁定版本（例：0.2.2-rc.2）
+# 2) 重建镜像并锁定版本（例：0.2.3-alpha.2）
 docker build \
-  --build-arg DSH_VERSION=0.2.2-rc.2 \
-  -t <你的仓库>/deepseek-harness:0.2.2-rc.2 \
+  --build-arg DSH_VERSION=0.2.3-alpha.2 \
+  -t <你的仓库>/deepseek-harness:0.2.3-alpha.2 \
   -t <你的仓库>/deepseek-harness:latest \
   .
 
 # admin 变体（预装进 /opt/dsh，tag 位数即 DSH 版本）
-docker build --build-arg DEV_TOOLS=admin --build-arg DSH_VERSION=0.2.2-rc.2 \
-  -t <你的仓库>/deepseek-harness:admin-0.2.2-rc.2 .
+docker build --build-arg DEV_TOOLS=admin --build-arg DSH_VERSION=0.2.3-alpha.2 \
+  -t <你的仓库>/deepseek-harness:admin-0.2.3-alpha.2 .
 
 # 3) 推送
-docker push <你的仓库>/deepseek-harness:0.2.2-rc.2
+docker push <你的仓库>/deepseek-harness:0.2.3-alpha.2
 docker push <你的仓库>/deepseek-harness:latest
 
 # 4) 回填本文件的「已核对版本」与核对日期
@@ -69,12 +75,32 @@ git push origin main                      # 推到自己的 fork
 工作流：`.github/workflows/build-push-dockerhub.yml`
 
 触发方式：
-- **定时**：每天 01:00 UTC（= 09:00 Asia/Shanghai），自动跟随官方 `next` 重打全部变体；
-- **手动**：Actions → Build & Push (Docker Hub) → Run workflow，可指定具体版本号（如 `0.2.2-rc.2`）与架构；
-- **改动触发**：`Dockerfile` / `.build-variants` / `entrypoint.sh` / `proxy/**` / `manager/**` 变更后推送 main。
+- **定时**：每天 01:00 UTC（= 09:00 Asia/Shanghai），自动跟随官方最新发布版本重打全部变体；
+- **手动**：Actions → Build & Push (Docker Hub) → Run workflow，可指定版本来源（见下表）与架构；
+- **改动触发**：`Dockerfile` / `.build-variants` / `entrypoint.sh` / `proxy/**` / `manager/**` / `scripts/resolve-dsh-version.sh` / 工作流本身变更后推送 main。
 
-做法：先把 `DSH_VERSION` 解析成**具体版本号**（`auto` 取 npm `next`），并校验该版本在 npm 上真实存在，
+做法：先把 `dsh_version` 输入解析成**具体版本号**（见下表），并校验该版本在 npm 上真实存在，
 再以 `--build-arg DSH_VERSION=<版本>` 构建，所以每个镜像的 DSH 版本可复现、可追溯，不再是「构建那一刻的 next」。
+
+### 版本来源（`dsh_version` 输入）
+
+| 输入 | 解析结果 | 说明 |
+| --- | --- | --- |
+| `auto`（默认） | npm 上**发布最新**的版本 | 含 alpha / beta / rc 等所有预发布通道；按 semver 优先级 + 发布时间挑选 |
+| `next` / `latest` / `alpha` / `beta` … | 该 npm dist-tag 指向的版本 | 跟随官方推荐位；可能落后于「发布最新」 |
+| `0.2.3-alpha.2` | 该具体版本 | 完全锁定，可复现 |
+
+解析逻辑统一收敛在 `scripts/resolve-dsh-version.sh`，可单独运行：
+
+```bash
+scripts/resolve-dsh-version.sh auto        # → 发布最新的版本号
+scripts/resolve-dsh-version.sh next        # → next 标签指向的版本号
+scripts/resolve-dsh-version.sh 0.2.3-alpha.2
+```
+
+**为什么 `auto` 不能等价于「取 next」**：dist-tag 是官方的推荐位，会随官方发版策略移动。
+当官方只给 `alpha` 通道打 tag 时，更高版本的 rc / 正式版可能已发布却没有任何 tag 指向，
+此时只跟 `next` 就会漏掉新版本。`auto` 直接按发布时间取最新，保证「官方一发版就自动跟上」。
 
 一次运行产出 5 个镜像变体（基础 + `.build-variants` 里每个前缀）：`none`、`test`、`admin`、`devtools`、`devtools-min`。
 tag 规则（`<img>` = `DOCKERHUB_IMAGE`，默认 `<GitHub 仓库 owner>/deepseek-harness`）：

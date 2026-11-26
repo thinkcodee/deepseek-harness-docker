@@ -4,13 +4,21 @@ name: Build & Push (Docker Hub)
 # GHCR 是备用源：Docker Hub 在国内/NAS 拉不动时切 ghcr.io/<owner>/deepseek-harness:<tag>。
 # 注意：GHCR 包首次推送后默认 private，需在 GitHub → Packages 里把可见性改成 Public 才能免登录拉取。
 # 构建成功后还会打 git tag（dsh-v<版本>）并发布 GitHub Release，附源码 tar.gz/zip 与 SHA256。
-# 关键点：先把 DSH_VERSION 解析成具体版本号（auto 取 npm next）再构建，
-# 让每个镜像的 DSH 版本可复现、可追溯，而不是「构建那一刻的 next」。
+# 关键点：先把 DSH_VERSION 解析成具体版本号再构建，让每个镜像的 DSH 版本可复现、可追溯，
+# 而不是「构建那一刻的 next」。
+#
+# 版本解析（scripts/resolve-dsh-version.sh）：
+#   auto             取 npm 上**发布最新**的版本（含 alpha / beta / rc 等预发布通道）
+#   next/latest/...  取该 npm dist-tag 指向的版本
+#   0.2.3-alpha.2    指定具体版本
+# 为什么 auto 不是「取 next」：dist-tag 是官方推荐位，next/latest 未必指向最新发布的版本
+# （例如官方只给 alpha 通道打 tag 时，更高的 rc/正式版可能还没被任何 tag 指向），
+# 只跟 next 会漏掉官方已发布的新版本。auto 按 semver 优先级 + 发布时间取最新。
 on:
   workflow_dispatch:
     inputs:
       dsh_version:
-        description: '要打包的 DSH 版本：具体版本号（如 0.2.2-rc.2）或 npm 标签（next/latest），auto = next'
+        description: '要打包的 DSH 版本：auto = npm 上发布最新的版本（含 alpha/beta/rc）；也可用 npm 标签（next/latest/alpha）或具体版本号（如 0.2.3-alpha.2）'
         required: false
         default: 'auto'
       platforms:
@@ -36,6 +44,7 @@ on:
       - 'entrypoint.sh'
       - 'proxy/**'
       - 'manager/**'
+      - 'scripts/resolve-dsh-version.sh'
       - '.github/workflows/build-push-dockerhub.yml'
   schedule:
     # 每天 01:00 UTC = 09:00 Asia/Shanghai，自动跟随官方版本重打
@@ -63,6 +72,7 @@ jobs:
       version: ${{ steps.ver.outputs.version }}
       variants: ${{ steps.matrix.outputs.variants }}
       platforms: ${{ steps.ver.outputs.platforms }}
+      channel: ${{ steps.ver.outputs.channel }}
     steps:
       - uses: actions/checkout@v4
 
@@ -94,24 +104,13 @@ jobs:
             echo "::error::linux/arm/v7 无法构建：dsh 需要 Node >= 24.9.0，而官方 node 镜像（24/26/27）只提供 amd64、arm64v8、ppc64le、s390x，不含 32 位 ARM。请改用 arm64 设备或改选其它架构。"
             exit 1
           fi
-          raw="$(echo "$RAW" | tr -d '[:space:]')"
-          if [[ "$raw" =~ ^[0-9] ]]; then
-            ver="$raw"; echo "按具体版本处理：$ver"
-          else
-            tag="$raw"; [ "$tag" = "auto" ] && tag="next"
-            ver="$(curl -fsSL "https://registry.npmjs.org/@deepseek-ai/dsh/$tag" \
-                   | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);if(!j.version){console.error("npm 标签 %s 没有 version 字段",process.argv[1]);process.exit(1)}process.stdout.write(j.version)})' "$tag")" \
-              || { echo "::error::无法从 npm 解析标签 $tag"; exit 1; }
-            echo "npm 标签 $tag → $ver"
-          fi
-          code="$(curl -s -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/@deepseek-ai/dsh/$ver")"
-          if [ "$code" != "200" ]; then
-            echo "::error::DSH 版本不存在：$ver（npm 返回 $code）"
-            exit 1
-          fi
-          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          # 版本解析统一收敛到 scripts/resolve-dsh-version.sh：
+          #   auto → npm 上发布最新的版本（含 alpha/beta/rc）；next/latest/... → 对应 dist-tag；
+          #   0.2.3-alpha.2 → 具体版本。解析后仍会校验该版本在 npm 上真实存在。
+          # 脚本用 --github-output 顺带写出 version / channel / dist_tag 三个输出。
+          scripts/resolve-dsh-version.sh "$RAW" --github-output
           echo "platforms=$PLATFORMS" >> "$GITHUB_OUTPUT"
-          echo "✅ 将构建 DSH $ver（$PLATFORMS）"
+          echo "✅ 将构建 DSH ${{ steps.ver.outputs.version }}（$PLATFORMS，解析方式 ${{ steps.ver.outputs.channel }}）"
 
       - name: 生成变体矩阵
         id: matrix
@@ -271,8 +270,10 @@ jobs:
           today="$(date -u -d '+8 hours' +%F)"
           next="$(curl -fsSL https://registry.npmjs.org/@deepseek-ai/dsh/next | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).version))')" || next="未知"
           latest="$(curl -fsSL https://registry.npmjs.org/@deepseek-ai/dsh/latest | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).version))')" || latest="未知"
+          # auto 通道解析出来的「npm 上发布最新的版本」，可能与 next/latest 不同
+          auto="$(scripts/resolve-dsh-version.sh auto | tail -n1)" || auto="未知"
           sed -i -E "s#^\| 已核对版本 \|.*#| 已核对版本 | $V（$today CI 构建） |#" MAINTENANCE.md
-          sed -i -E "s#^\| npm 标签 \|.*#| npm 标签 | \`next\` = $next，\`latest\` = $latest |#" MAINTENANCE.md
+          sed -i -E "s#^\| npm 标签 \|.*#| npm 标签 | \`next\` = $next，\`latest\` = $latest，\`auto\`（发布最新） = $auto |#" MAINTENANCE.md
           git diff --stat
 
       - name: 提交
@@ -378,7 +379,7 @@ jobs:
             - GitHub 自动附带的 Source code (zip / tar.gz)
 
             ### 版本对应
-            DSH `${{ needs.resolve.outputs.version }}`（npm `next`/指定版本），镜像内 `/tmp/app_version.env` 的 `APP_VERSION` 已由 CI 回拉校验。
+            DSH `${{ needs.resolve.outputs.version }}`（版本解析方式：`${{ needs.resolve.outputs.channel }}`），镜像内 `/tmp/app_version.env` 的 `APP_VERSION` 已由 CI 回拉校验。
           files: |
             dist/*.tar.gz
             dist/*.zip

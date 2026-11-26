@@ -16,7 +16,10 @@ FROM node:24-slim AS dsh-builder
 ARG DEV_TOOLS=none
 # DSH 版本：默认 next（跟随官方预发布通道，每次构建都取当时最新，等同原行为）；
 # 需要可复现/锁定版本时传 --build-arg DSH_VERSION=0.2.2-rc.2（官方 tag 形如 dsh-v0.2.2-rc.2）。
-# 当前官方最新（2026-11-13 核对）：next=0.2.2-rc.2，latest=0.2.2-rc.1。
+# 也可以直接传 npm dist-tag（next/latest/alpha/...）或具体版本号。
+# CI 不会把标签传进来，而是先经 scripts/resolve-dsh-version.sh 解析成具体版本号再构建，
+# 保证镜像内的 DSH 版本可复现、可追溯。
+# 当前官方最新（2026-11-26 核对）：next=0.2.2-rc.5，latest=0.2.2-rc.5，alpha=0.2.3-alpha.2。
 ARG DSH_VERSION=next
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 make g++ \

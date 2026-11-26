@@ -58,6 +58,26 @@ docker rm dsh-harness
 Linux 下 node-pty 没有预编译产物，会从源码编译（Dockerfile 已用多阶段构建装好 python3/make/g++，
 编译完成后运行镜像不保留编译工具）。
 
+### 指定镜像内的 DSH 版本
+
+镜像里装哪个 DSH 版本由构建参数 `DSH_VERSION` 决定：
+
+```bash
+# 默认：跟随 npm 的 next（构建那一刻的最新 next）
+docker build -t smanx/deepseek-harness .
+
+# 指定某个具体版本（可复现）
+docker build --build-arg DSH_VERSION=0.2.3-alpha.2 -t smanx/deepseek-harness:0.2.3-alpha.2 .
+```
+
+GitHub Actions 流水线会自动解析版本：默认取 npm 上**发布最新**的版本（含 alpha / beta / rc 等
+预发布通道），也可在手动触发时指定 dist-tag（`next` / `latest` / `alpha` …）或具体版本号。
+解析逻辑见 `scripts/resolve-dsh-version.sh`，细节见 [MAINTENANCE.md](MAINTENANCE.md)。
+
+> **dist-tag 不等于「最新发布」**：官方可能只给 `alpha` 通道打 tag，此时 `next`/`latest` 会落后于
+> 已经发布的更高版本（例：`next`=`0.2.2-rc.5`，但已发布的 `0.2.3-alpha.2` 没有任何 tag 指向）。
+> 流水线的默认 `auto` 通道按**发布时间**取最新，因此不会漏掉官方已发的新版本。
+
 ## 各 tag 的区别
 
 默认运行镜像为精简版，不保留编译工具，适合生产部署。若需要在容器内开发/调试，

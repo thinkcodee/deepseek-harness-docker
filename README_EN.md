@@ -58,6 +58,29 @@ Building installs DSH via npm (~250MB of dependencies), so the first build is sl
 On Linux, node-pty has no prebuilt binaries and is compiled from source (the Dockerfile uses a
 multi-stage build with python3/make/g++ installed; the runtime image does not keep the build tools).
 
+### Choosing the DSH Version in the Image
+
+Which DSH version ships in the image is controlled by the `DSH_VERSION` build argument:
+
+```bash
+# Default: follow npm's `next` (whatever `next` points at build time)
+docker build -t smanx/deepseek-harness .
+
+# Pin a specific version (reproducible)
+docker build --build-arg DSH_VERSION=0.2.3-alpha.2 -t smanx/deepseek-harness:0.2.3-alpha.2 .
+```
+
+The GitHub Actions pipeline resolves the version automatically: by default it takes the **most
+recently published** version on npm (including alpha / beta / rc pre-release channels), and you can
+also pick a dist-tag (`next` / `latest` / `alpha` …) or an exact version when triggering it manually.
+The resolution lives in `scripts/resolve-dsh-version.sh`; see
+[MAINTENANCE.md](MAINTENANCE.md) for details.
+
+> **A dist-tag is not the same as "latest published"**: the official team may only tag the `alpha`
+> channel, in which case `next`/`latest` lag behind a higher version that is already published
+> (e.g. `next`=`0.2.2-rc.5` while the published `0.2.3-alpha.2` has no tag pointing at it).
+> The pipeline's default `auto` channel picks by **publish time**, so it never misses a release.
+
 ## Differences Between the Tags
 
 The default runtime image is slim and does not keep build tools, suitable for production. If you
