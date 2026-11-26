@@ -323,7 +323,6 @@ jobs:
           fi
 
       - name: 生成源码制品包
-        if: steps.chk.outputs.exists == 'false'
         env:
           V: ${{ needs.resolve.outputs.version }}
         run: |
@@ -364,7 +363,6 @@ jobs:
           echo "已创建 $TAG → $SHA"
 
       - name: 创建 GitHub Release
-        if: steps.chk.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: dsh-v${{ needs.resolve.outputs.version }}
@@ -406,3 +404,4 @@ jobs:
             dist/*.zip
             dist/*.sha256
           fail_on_unmatched_files: true
+
